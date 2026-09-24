@@ -13,7 +13,7 @@ import net.minecraft.util.math.BlockPos;
 public class PortalMakerHud extends HudElement {
     public static final HudElementInfo<PortalMakerHud> INFO = new HudElementInfo<>(
         null, "Portal Maker HUD",
-        "portal-maker-hud",
+        "portal-maker",
         "Displays the progress of the Portal Maker module.",
         PortalMakerHud::new
     );
