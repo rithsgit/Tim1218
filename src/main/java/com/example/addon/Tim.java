@@ -53,6 +53,7 @@ import com.example.addon.modules.SafetyNet;
 import com.example.addon.modules.ServerHealthcareSystem;
 import com.example.addon.modules.SignScanner;
 import com.example.addon.modules.ThirdSight;
+import com.example.addon.modules.Threaturn;
 import com.example.addon.modules.Timethrottle;
 import com.example.addon.modules.TotalDisposal;
 import com.example.addon.modules.Tunnelers;
@@ -105,6 +106,7 @@ public class Tim extends MeteorAddon {
         modules.add(new ServerHealthcareSystem());
         modules.add(new SignScanner());
         modules.add(new ThirdSight());
+        modules.add(new Threaturn());
         modules.add(new Timethrottle());
         modules.add(new TotalDisposal());
         modules.add(new Tunnelers());
