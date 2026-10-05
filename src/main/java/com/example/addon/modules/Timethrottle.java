@@ -23,26 +23,14 @@ import net.minecraft.world.World;
 
 public class Timethrottle extends Module {
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Constants
-    // ═══════════════════════════════════════════════════════════════════════════
-
     private static final double NORMAL_SPEED = 1.0;
     private static final int    GRACE_PERIOD = 100;
     private static final int    TICKS_PER_SECOND = 20;
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ThrottleSource Interface
-    // ═══════════════════════════════════════════════════════════════════════════
 
     private interface ThrottleSource {
         String name();
         double evaluate();
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // SafetyReason Enum
-    // ═══════════════════════════════════════════════════════════════════════════
 
     public enum SafetyReason {
         NONE("None"),
@@ -56,20 +44,16 @@ public class Timethrottle extends Module {
         public String getTitle() { return title; }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // Setting Groups
-    // ═══════════════════════════════════════════════════════════════════════════
-
     private final SettingGroup sgGeneral      = settings.getDefaultGroup();
+    private final SettingGroup sgChunkBoost   = settings.createGroup("Chunk Boost");
+    private final SettingGroup sgFps          = settings.createGroup("Unfocused FPS");
     private final SettingGroup sgTps          = settings.createGroup("TPS");
     private final SettingGroup sgChunkLoading = settings.createGroup("Chunk Loading");
     private final SettingGroup sgPing         = settings.createGroup("Ping");
     private final SettingGroup sgSafety       = settings.createGroup("Safety");
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — General
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // --- General Settings ---
     private final Setting<Double> slowDownSmoothing = sgGeneral.add(new DoubleSetting.Builder()
         .name("slow-down-smoothing").description("How quickly speed drops when throttling. 0 = instant, higher = more gradual.")
         .defaultValue(0.1).min(0.0).max(0.99).sliderMax(0.5).build()
@@ -85,10 +69,59 @@ public class Timethrottle extends Module {
         .defaultValue(0.15).min(0.05).max(0.5).sliderMax(0.5).build()
     );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — TPS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // --- Chunk Boost Settings ---
+    private final Setting<Boolean> overrideRate = sgChunkBoost.add(new BoolSetting.Builder()
+        .name("override-chunk-rate")
+        .description("Replace the chunk rate the client reports to the server.")
+        .defaultValue(true)
+        .build()
+    );
 
+    private final Setting<Double> chunkRate = sgChunkBoost.add(new DoubleSetting.Builder()
+        .name("chunks-per-tick")
+        .description("Chunks per tick to request from the server. The server clamps this to its own limits.")
+        .defaultValue(20)
+        .min(0.5)
+        .max(64)
+        .sliderRange(1, 64)
+        .visible(overrideRate::get)
+        .build()
+    );
+
+    private final Setting<Boolean> onlyRaise = sgChunkBoost.add(new BoolSetting.Builder()
+        .name("only-raise")
+        .description("Only replace the vanilla value when it is lower than the configured rate.")
+        .defaultValue(true)
+        .visible(overrideRate::get)
+        .build()
+    );
+
+    private final Setting<Boolean> logRate = sgChunkBoost.add(new BoolSetting.Builder()
+        .name("log-chunk-rate")
+        .description("Print the vanilla value and the value actually sent for every chunk batch.")
+        .defaultValue(false)
+        .build()
+    );
+
+    // --- Unfocused FPS Settings ---
+    private final Setting<Boolean> limitUnfocused = sgFps.add(new BoolSetting.Builder()
+        .name("limit-unfocused-fps")
+        .description("Lower the FPS limit while the window is not focused.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> unfocusedFps = sgFps.add(new IntSetting.Builder()
+        .name("unfocused-fps")
+        .description("FPS limit to use while the window is not focused.")
+        .defaultValue(1)
+        .min(1)
+        .sliderRange(1, 20)
+        .visible(limitUnfocused::get)
+        .build()
+    );
+
+    // --- TPS Settings ---
     private final Setting<Double> targetTps = sgTps.add(new DoubleSetting.Builder()
         .name("target-tps").description("TPS above which no throttling is applied.")
         .defaultValue(19.0).min(1).max(20).sliderMax(20).build()
@@ -104,10 +137,7 @@ public class Timethrottle extends Module {
         .defaultValue(0.5).min(0.1).max(1.0).sliderMax(1.0).build()
     );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Chunk Loading
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // --- Chunk Loading Settings ---
     private final Setting<Boolean> chunkThrottle = sgChunkLoading.add(new BoolSetting.Builder()
         .name("chunk-throttle").description("Slow down when chunks are missing to force them to load.")
         .defaultValue(true).build()
@@ -118,7 +148,6 @@ public class Timethrottle extends Module {
         .defaultValue(0.7).min(0.1).max(1.0).sliderMax(1.0).visible(chunkThrottle::get).build()
     );
 
-    // --- Stall Detection (Moved UP to fix forward reference) ---
     private final Setting<Boolean> stallDetection = sgChunkLoading.add(new BoolSetting.Builder()
         .name("stall-detection").description("Give up early if chunks aren't actually loading (stalled).")
         .defaultValue(true).visible(chunkThrottle::get).build()
@@ -130,7 +159,6 @@ public class Timethrottle extends Module {
         .visible(() -> chunkThrottle.get() && stallDetection.get()).build()
     );
 
-    // --- Give-up / Timeout Escape ---
     private final Setting<Integer> maxThrottleTime = sgChunkLoading.add(new IntSetting.Builder()
         .name("max-throttle-time").description("Max seconds of continuous chunk-throttling before giving up and running at normal speed. 0 = disabled.")
         .defaultValue(15).min(0).sliderMax(120).visible(chunkThrottle::get).build()
@@ -142,19 +170,16 @@ public class Timethrottle extends Module {
         .visible(() -> chunkThrottle.get() && (maxThrottleTime.get() > 0 || stallDetection.get())).build()
     );
 
-    // --- Chunk Count EMA Smoothing ---
     private final Setting<Double> chunkEmaFactor = sgChunkLoading.add(new DoubleSetting.Builder()
         .name("chunk-smoothing").description("Smooths the unloaded-chunk count to prevent jittery speed changes. 0 = no smoothing, higher = more smoothing.")
         .defaultValue(0.5).min(0.0).max(0.95).sliderMax(0.8).visible(chunkThrottle::get).build()
     );
 
-    // --- Dimension Override ---
     private final Setting<Boolean> dimensionOverride = sgChunkLoading.add(new BoolSetting.Builder()
         .name("dimension-override").description("Use different chunk thresholds for Overworld, Nether, and End.")
         .defaultValue(true).visible(chunkThrottle::get).build()
     );
 
-    // --- Dimension Specific ---
     private final Setting<Integer> owStart = sgChunkLoading.add(new IntSetting.Builder()
         .name("overworld-start").description("Missing chunks to start slowing down in the Overworld.")
         .defaultValue(10).min(1).sliderMax(100)
@@ -191,7 +216,6 @@ public class Timethrottle extends Module {
         .visible(() -> chunkThrottle.get() && dimensionOverride.get()).build()
     );
 
-    // --- Universal Thresholds ---
     private final Setting<Integer> chunkLoadThreshold = sgChunkLoading.add(new IntSetting.Builder()
         .name("start-throttle").description("Missing chunks to start slowing down.")
         .defaultValue(10).min(1).sliderMax(100)
@@ -204,10 +228,7 @@ public class Timethrottle extends Module {
         .visible(() -> chunkThrottle.get() && !dimensionOverride.get()).build()
     );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Ping
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // --- Ping Settings ---
     private final Setting<Boolean> pingThrottle = sgPing.add(new BoolSetting.Builder()
         .name("ping-throttle").description("Slow down when server ping is high.")
         .defaultValue(true).build()
@@ -228,10 +249,7 @@ public class Timethrottle extends Module {
         .defaultValue(0.6).min(0.1).max(1.0).sliderMax(1.0).visible(pingThrottle::get).build()
     );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Settings — Safety
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // --- Safety Settings ---
     private final Setting<Boolean> combatSafety = sgSafety.add(new BoolSetting.Builder()
         .name("combat-safety").description("Disables throttling when in combat or near enemies.")
         .defaultValue(true).build()
@@ -252,35 +270,28 @@ public class Timethrottle extends Module {
         .defaultValue(60).min(0).sliderMax(200).visible(combatSafety::get).build()
     );
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // State
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private double       currentSpeed     = NORMAL_SPEED;
-    private int          safetyTicks      = 0;
-    private int          graceTicks       = 0;
+    private double currentSpeed = NORMAL_SPEED;
+    private int safetyTicks = 0;
+    private int graceTicks = 0;
     private SafetyReason lastSafetyReason = SafetyReason.NONE;
 
-    // Chunk tracking state
-    private int     chunkThrottleTicks     = 0;  // How long chunk source has been throttling
-    private int     chunkGiveUpTicks      = 0;  // Remaining give-up cooldown (normal speed period)
-    private int     stallTicks            = 0;  // Ticks since chunks last made loading progress
-    private int     lastRawUnloaded       = -1; // Previous raw unloaded count (for stall detection)
-    private double  smoothedUnloaded      = -1; // EMA of unloaded chunk count
-    private int     cachedUnloaded        = 0;  // Cached smoothed count for this tick
+    private int chunkThrottleTicks = 0;
+    private int chunkGiveUpTicks = 0;
+    private int stallTicks = 0;
+    private int lastRawUnloaded = -1;
+    private double smoothedUnloaded = -1;
+    private int cachedUnloaded = 0;
     private boolean cachedPlayerAreaLoaded = true;
-    private boolean chunkDataValid        = false;
+    private boolean chunkDataValid = false;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ThrottleSource instances
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // Throttle Sources
     private final ThrottleSource tpsSource = new ThrottleSource() {
         @Override public String name() { return "TPS"; }
         @Override public double evaluate() {
             double tps = TickRate.INSTANCE.getTickRate();
             if (tps >= targetTps.get()) return NORMAL_SPEED;
-            if (tps <= minTps.get())    return tpsMinSpeed.get();
+            if (tps <= minTps.get()) return tpsMinSpeed.get();
             return MathHelper.map(tps, minTps.get(), targetTps.get(), tpsMinSpeed.get(), NORMAL_SPEED);
         }
     };
@@ -289,11 +300,8 @@ public class Timethrottle extends Module {
         @Override public String name() { return "Chunks"; }
         @Override public double evaluate() {
             if (!chunkThrottle.get()) return NORMAL_SPEED;
-            // Give-up active: run at normal speed to give player a break
             if (chunkGiveUpTicks > 0) return NORMAL_SPEED;
-            // Data not ready yet (first tick, world just loaded)
             if (!chunkDataValid) return NORMAL_SPEED;
-            // Player area not fully loaded: don't throttle
             if (!cachedPlayerAreaLoaded) return NORMAL_SPEED;
 
             int startThr;
@@ -327,80 +335,94 @@ public class Timethrottle extends Module {
             if (!pingThrottle.get()) return NORMAL_SPEED;
             int ping = getPlayerPing();
             if (ping <= pingThreshold.get()) return NORMAL_SPEED;
-            if (ping >= maxPing.get())       return pingMinSpeed.get();
+            if (ping >= maxPing.get()) return pingMinSpeed.get();
             return MathHelper.map(ping, pingThreshold.get(), maxPing.get(), NORMAL_SPEED, pingMinSpeed.get());
         }
     };
 
     private final ThrottleSource[] sources = { tpsSource, chunkSource, pingSource };
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Constructor & Lifecycle
-    // ═══════════════════════════════════════════════════════════════════════════
-
     public Timethrottle() {
         super(Tim.CATEGORY, "time-throttle",
             "Automatically adjusts game speed based on server TPS, chunk loading, and ping.");
     }
 
+    // --- Mixin Accessors ---
+
+    public float modifyChunkRate(float vanilla) {
+        if (!overrideRate.get()) {
+            if (logRate.get()) info("vanilla %.2f (override off)", vanilla);
+            return vanilla;
+        }
+
+        float target = chunkRate.get().floatValue();
+        float result = onlyRaise.get() ? Math.max(vanilla, target) : target;
+
+        if (logRate.get()) info("vanilla %.2f -> sent %.2f", vanilla, result);
+
+        return result;
+    }
+
+    public int getUnfocusedFpsLimit() {
+        return limitUnfocused.get() ? unfocusedFps.get() : -1;
+    }
+
+    // --- Lifecycle ---
+
     @Override
     public void onActivate() {
-        currentSpeed          = NORMAL_SPEED;
-        safetyTicks           = 0;
-        graceTicks            = GRACE_PERIOD;
-        lastSafetyReason      = SafetyReason.NONE;
-        chunkThrottleTicks    = 0;
-        chunkGiveUpTicks      = 0;
-        stallTicks            = 0;
-        lastRawUnloaded       = -1;
-        smoothedUnloaded      = -1;
-        chunkDataValid        = false;
+        currentSpeed       = NORMAL_SPEED;
+        safetyTicks        = 0;
+        graceTicks         = GRACE_PERIOD;
+        lastSafetyReason   = SafetyReason.NONE;
+        chunkThrottleTicks = 0;
+        chunkGiveUpTicks   = 0;
+        stallTicks         = 0;
+        lastRawUnloaded    = -1;
+        smoothedUnloaded   = -1;
+        chunkDataValid     = false;
         Modules.get().get(Timer.class).setOverride(NORMAL_SPEED);
     }
 
     @Override
-    public void onDeactivate() { applySpeed(NORMAL_SPEED); }
+    public void onDeactivate() {
+        applySpeed(NORMAL_SPEED);
+    }
 
     @EventHandler
     private void onGameLeft(GameLeftEvent event) {
-        currentSpeed          = NORMAL_SPEED;
-        safetyTicks           = 0;
-        graceTicks            = 0;
-        lastSafetyReason      = SafetyReason.NONE;
-        chunkThrottleTicks    = 0;
-        chunkGiveUpTicks      = 0;
-        stallTicks            = 0;
-        lastRawUnloaded       = -1;
-        smoothedUnloaded      = -1;
-        chunkDataValid        = false;
+        currentSpeed       = NORMAL_SPEED;
+        safetyTicks        = 0;
+        graceTicks         = 0;
+        lastSafetyReason   = SafetyReason.NONE;
+        chunkThrottleTicks = 0;
+        chunkGiveUpTicks   = 0;
+        stallTicks         = 0;
+        lastRawUnloaded    = -1;
+        smoothedUnloaded   = -1;
+        chunkDataValid     = false;
         Modules.get().get(Timer.class).setOverride(NORMAL_SPEED);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Tick
-    // ═══════════════════════════════════════════════════════════════════════════
+    // --- Tick Loop ---
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.world == null || mc.player == null) return;
 
-        // Player's own chunk not loaded — don't interfere
         if (!mc.world.getChunkManager().isChunkLoaded(mc.player.getChunkPos().x, mc.player.getChunkPos().z)) {
             applySpeed(NORMAL_SPEED);
             return;
         }
 
-        // Grace period after module activation / world join
         if (graceTicks > 0) {
             graceTicks--;
             applySpeed(NORMAL_SPEED);
             return;
         }
 
-        // Update chunk tracking data (cached for this entire tick)
         updateChunkTracking();
 
-        // Safety overrides (instant, no smoothing — combat needs immediate response)
         updateSafety();
         if (safetyTicks > 0) {
             safetyTicks--;
@@ -409,28 +431,20 @@ public class Timethrottle extends Module {
         }
         lastSafetyReason = SafetyReason.NONE;
 
-        // Compute desired speed from all sources
         double desired = computeDesiredSpeed();
 
-        // Track how long chunk throttling has been active, and check for give-up
-        double chunkSpeed = chunkSource.evaluate();
-        if (chunkSpeed < NORMAL_SPEED - 0.01) {
+        double currentChunkSpeed = chunkSource.evaluate();
+        if (currentChunkSpeed < NORMAL_SPEED - 0.01) {
             chunkThrottleTicks++;
             checkGiveUp();
         } else {
             chunkThrottleTicks = 0;
         }
 
-        // Decrement give-up cooldown
         if (chunkGiveUpTicks > 0) chunkGiveUpTicks--;
 
-        // Apply with asymmetric smoothing
         smoothAndApply(desired);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Chunk Tracking — runs once per tick, caches results for all evaluations
-    // ═══════════════════════════════════════════════════════════════════════════
 
     private void updateChunkTracking() {
         if (mc.world == null || mc.player == null) {
@@ -438,7 +452,6 @@ public class Timethrottle extends Module {
             return;
         }
 
-        // Check 3×3 chunks around player (cheap, 9 lookups)
         int px = mc.player.getChunkPos().x;
         int pz = mc.player.getChunkPos().z;
         cachedPlayerAreaLoaded = true;
@@ -452,16 +465,13 @@ public class Timethrottle extends Module {
             }
         }
 
-        // Skip expensive full count if player area isn't even loaded
         if (!cachedPlayerAreaLoaded) {
-            chunkDataValid = true; // Valid but will return NORMAL_SPEED
+            chunkDataValid = true;
             return;
         }
 
-        // Count unloaded chunks in view distance
         int raw = countUnloadedChunks();
 
-        // EMA smoothing — prevents jittery speed changes as player moves
         if (smoothedUnloaded < 0) {
             smoothedUnloaded = raw;
         } else {
@@ -470,9 +480,8 @@ public class Timethrottle extends Module {
         }
         cachedUnloaded = (int) Math.round(smoothedUnloaded);
 
-        // Stall detection — if chunk count decreased, progress was made
         if (lastRawUnloaded < 0 || raw < lastRawUnloaded) {
-            stallTicks = 0; // Progress! Reset stall timer
+            stallTicks = 0;
         } else {
             stallTicks++;
         }
@@ -481,34 +490,23 @@ public class Timethrottle extends Module {
         chunkDataValid = true;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Give-Up Logic — escape from hopeless throttling
-    // ═══════════════════════════════════════════════════════════════════════════
-
     private void checkGiveUp() {
         boolean shouldGiveUp = false;
 
-        // Condition 1: Max throttle time reached — we've been slow for too long
         if (maxThrottleTime.get() > 0 && chunkThrottleTicks >= maxThrottleTime.get() * TICKS_PER_SECOND) {
             shouldGiveUp = true;
         }
 
-        // Condition 2: Stall detected — chunks aren't loading at all, being slow won't help
         if (stallDetection.get() && stallTicks >= stallTimeout.get() * TICKS_PER_SECOND) {
             shouldGiveUp = true;
         }
 
         if (shouldGiveUp) {
-            // Enter recovery: run at normal speed for the cooldown period
             chunkGiveUpTicks   = Math.max(giveUpCooldown.get(), 1) * TICKS_PER_SECOND;
             chunkThrottleTicks = 0;
             stallTicks         = 0;
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Safety Logic
-    // ═══════════════════════════════════════════════════════════════════════════
 
     private void updateSafety() {
         if (!combatSafety.get()) return;
@@ -537,10 +535,6 @@ public class Timethrottle extends Module {
         return SafetyReason.NONE;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Evaluation & Application
-    // ═══════════════════════════════════════════════════════════════════════════
-
     private double computeDesiredSpeed() {
         double desired = NORMAL_SPEED;
         for (ThrottleSource source : sources) desired = Math.min(desired, source.evaluate());
@@ -548,9 +542,6 @@ public class Timethrottle extends Module {
     }
 
     private void smoothAndApply(double desired) {
-        // Asymmetric smoothing:
-        // - Slowing down: fast response (low smoothing) — get to throttle speed quickly
-        // - Speeding up: gradual recovery (higher smoothing) — gives chunks time to catch up
         double smoothing = (desired < currentSpeed)
             ? slowDownSmoothing.get()
             : speedUpSmoothing.get();
@@ -563,29 +554,6 @@ public class Timethrottle extends Module {
         currentSpeed = speed;
         Modules.get().get(Timer.class).setOverride(speed);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Public Accessors (For HUD)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    public double       getCurrentSpeed()     { return currentSpeed; }
-    public boolean      isSafetyActive()      { return safetyTicks > 0; }
-    public boolean      isChunkGiveUpActive() { return chunkGiveUpTicks > 0; }
-    public SafetyReason getLastSafetyReason() { return lastSafetyReason; }
-    public int          sourceCount()         { return sources.length; }
-    public String       sourceName(int i)     { return (i >= 0 && i < sources.length) ? sources[i].name() : "?"; }
-    public double       evaluateSource(int i) { return (i >= 0 && i < sources.length) ? sources[i].evaluate() : NORMAL_SPEED; }
-
-    @Override
-    public String getInfoString() {
-        if (isSafetyActive()) return "SAFETY";
-        if (chunkGiveUpTicks > 0) return "RECOVERY";
-        return String.format("%.0f%%", getCurrentSpeed() * 100);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Helpers
-    // ═══════════════════════════════════════════════════════════════════════════
 
     private int getPlayerPing() {
         if (mc.getNetworkHandler() == null || mc.player == null) return 0;
@@ -607,5 +575,21 @@ public class Timethrottle extends Module {
             }
         }
         return unloaded;
+    }
+
+    // Accessors for HUD
+    public double getCurrentSpeed() { return currentSpeed; }
+    public boolean isSafetyActive() { return safetyTicks > 0; }
+    public boolean isChunkGiveUpActive() { return chunkGiveUpTicks > 0; }
+    public SafetyReason getLastSafetyReason() { return lastSafetyReason; }
+    public int sourceCount() { return sources.length; }
+    public String sourceName(int i) { return (i >= 0 && i < sources.length) ? sources[i].name() : "?"; }
+    public double evaluateSource(int i) { return (i >= 0 && i < sources.length) ? sources[i].evaluate() : NORMAL_SPEED; }
+
+    @Override
+    public String getInfoString() {
+        if (isSafetyActive()) return "SAFETY";
+        if (chunkGiveUpTicks > 0) return "RECOVERY";
+        return String.format("%.0f%%", getCurrentSpeed() * 100);
     }
 }
